@@ -34,7 +34,7 @@ class EarlyFusion(nn.Module):
 
         self.stem_block = nn.Sequential(
             nn.Conv2d(half_filter, down_filter, kernel_size=1, stride=1),
-            nn.Conv2d(down_filter, half_filter, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(down_filter, half_filter, kernel_size=3, stride=1),
         )
 
         self.bn = nn.BatchNorm2d(half_filter, eps=0.001, momentum=0.03, affine=True)
