@@ -23,14 +23,13 @@ class EarlyFusion(nn.Module):
 
         half_filter = int(c2 / 2)
         down_filter = int(half_filter / 2)
-        print(f"params: {c1, c2, k, s, p, g, d, act}")
 
         self.rgb_conv1 = nn.Conv2d(3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
 
         if c1 > 3:
             self.ir_conv1 = nn.Conv2d(c1 - 3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
         else:
-            self.ir_conv1 = None  # No IR convolution if c1 <= 3
+            self.ir_conv1 = None
 
         self.stem_block = nn.Sequential(
             nn.Conv2d(half_filter, down_filter, kernel_size=1, stride=1),
@@ -41,7 +40,7 @@ class EarlyFusion(nn.Module):
         self.act = nn.SiLU(inplace=True)
 
     def forward(self, x):
-        print(f"Input shape: {x.shape}")
+        # print(f"Input shape: {x.shape}")
         rgb_features = self.rgb_conv1(x[:, :3, :, :])
         stem_output_rgb = self.act(self.bn(self.stem_block(rgb_features)))
 
