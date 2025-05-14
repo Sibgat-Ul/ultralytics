@@ -17,7 +17,7 @@ def autopad(k, p=None, d=1):  # kernel, padding, dilation
 
 class EarlyFusion(nn.Module):
     def __init__(self, c_inr=3, c_ini=1, c2=64, k=1, s=1, p=None, g=1, d=1, act=True):
-        assert c2 % 2 is 0, "Output filters must be even"
+        assert c2 % 2 is 0, f"Output filter {c2} must be even."
         super().__init__()
 
         half_filter = int(c2 / 2)
