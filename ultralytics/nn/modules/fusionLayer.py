@@ -25,7 +25,7 @@ class EarlyFusion(nn.Module):
         print(f"params: {c1, c2, k, s, p, g, d, act}")
 
         self.rgb_conv1 = nn.Conv2d(c1, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-        self.ir_conv1 = nn.Conv2d(c1-3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        self.ir_conv1 = nn.Conv2d(1, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
 
         self.stem_block = nn.Sequential(
             nn.Conv2d(half_filter, down_filter, kernel_size=1, stride=1),
