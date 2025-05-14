@@ -225,6 +225,11 @@ class BaseModel(torch.nn.Module):
                     m.forward = m.forward_fuse
                 if isinstance(m, v10Detect):
                     m.fuse()  # remove one2many head
+                if isinstance(m, EarlyFusion):
+                    m.rgb_conv1 = fuse_conv_and_bn(m.rgb_conv1, m.bn)
+                    m.rgb_conv2 = fuse_conv_and_bn(m.rgb_conv2, m.bn)
+                    delattr(m, "bn")
+                    m.forward = m.forward_fuse
             self.info(verbose=verbose)
 
         return self

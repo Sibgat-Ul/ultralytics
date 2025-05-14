@@ -16,7 +16,7 @@ def autopad(k, p=None, d=1):  # kernel, padding, dilation
     return p
 
 class EarlyFusion(nn.Module):
-    def __init__(self, c1=4, c2=64, k=1, s=1, p=None, g=1, d=1, act=True):
+    def __init__(self, c1, c2, k, s, p=None, g=1, d=1, act=True):
         assert c2 % 2 is 0, f"params: {c1, c2, k, s, p, g, d, act}"
         super().__init__()
 
