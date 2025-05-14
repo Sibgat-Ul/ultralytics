@@ -36,6 +36,7 @@ class EarlyFusion(nn.Module):
         self.act = nn.SiLU(inplace=True)
 
     def forward(self, x):
+        print(x.shape)
         rgb_features = self.rgb_conv1(x[:, :3, :, :])
         ir_features = self.ir_conv1(x[:, 3:, :, :])
 
