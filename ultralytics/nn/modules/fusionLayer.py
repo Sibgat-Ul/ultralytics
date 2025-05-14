@@ -16,7 +16,7 @@ def autopad(k, p=None, d=1):  # kernel, padding, dilation
     return p
 
 class EarlyFusion(nn.Module):
-    def __init__(self, c_inr=3, c_ini=1, c2=64, k=1, s=1, p=None, g=1, d=1, act=True):
+    def __init__(self, c_in=4, c2=64, k=1, s=1, p=None, g=1, d=1, act=True):
         assert c2 % 2 is 0, f"Output filter {c2} must be even."
         super().__init__()
 
@@ -24,8 +24,8 @@ class EarlyFusion(nn.Module):
         down_filter = int(half_filter/2)
         # print(f"params: {c_inr, c_ini, c2, k, s, p, g, d, act, half_filter, down_filter}")
 
-        self.rgb_conv1 = nn.Conv2d(c_inr, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-        self.ir_conv1 = nn.Conv2d(c_ini, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        self.rgb_conv1 = nn.Conv2d(3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        self.ir_conv1 = nn.Conv2d(c_in-3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
 
         self.stem_block = nn.Sequential(
             nn.Conv2d(half_filter, down_filter, kernel_size=1, stride=1),
