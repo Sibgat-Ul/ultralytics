@@ -2,10 +2,10 @@
 import torch
 import torch.nn as nn
 
-__all__ = {
+__all__ = (
     "EarlyFusion",
     # "LateFusionYOLOv11"
-}
+)
 
 def autopad(k, p=None, d=1):  # kernel, padding, dilation
     """Pad to 'same' shape outputs."""
