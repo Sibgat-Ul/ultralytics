@@ -20,8 +20,9 @@ class EarlyFusion(nn.Module):
         assert c2 % 2 is 0, f"params: {c1, c2, k, s, p, g, d, act}"
         super().__init__()
 
-        half_filter = int(c2 / 2)
+        half_filter = int(c2/2)
         down_filter = int(half_filter/2)
+        assert half_filter % 2 is not 0, f"Half filter is even: {half_filter}"
         # print()
 
         self.rgb_conv1 = nn.Conv2d(3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
