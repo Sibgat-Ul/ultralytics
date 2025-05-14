@@ -22,9 +22,10 @@ class EarlyFusion(nn.Module):
 
         half_filter = int(c2 / 2)
         down_filter = int(half_filter/2)
+        print(f"params: {c_inr, c_ini, c2, k, s, p, g, d, act, half_filter, down_filter}")
+
         self.rgb_conv1 = nn.Conv2d(c_inr, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
         self.ir_conv1 = nn.Conv2d(c_ini, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-
 
         self.stem_block = nn.Sequential(
             nn.Conv2d(half_filter, down_filter, kernel_size=1, stride=1),
