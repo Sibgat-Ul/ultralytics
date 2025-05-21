@@ -7,6 +7,7 @@ import types
 from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -227,7 +228,7 @@ class BaseModel(torch.nn.Module):
                     m.fuse()  # remove one2many head
                 if isinstance(m, EarlyFusion):
                     m.rgb_conv1 = fuse_conv_and_bn(m.rgb_conv1, m.bn)
-                    m.rgb_conv2 = fuse_conv_and_bn(m.rgb_conv2, m.bn)
+                    m.ir_conv1 = fuse_conv_and_bn(m.ir_conv1, m.bn)
                     delattr(m, "bn")
                     m.forward = m.forward_fuse
             self.info(verbose=verbose)
@@ -350,7 +351,12 @@ class DetectionModel(BaseModel):
         if nc and nc != self.yaml["nc"]:
             LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
             self.yaml["nc"] = nc  # override YAML value
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
+
+        if self.yaml["n_bones"] == 1:
+            self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)
+        else:
+            self.models = [{i: parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)} for i in self.yaml["n_bones"]]
+
         self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
         self.inplace = self.yaml.get("inplace", True)
         self.end2end = getattr(self.model[-1], "end2end", False)
