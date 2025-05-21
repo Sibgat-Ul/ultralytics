@@ -27,11 +27,9 @@ class ResidualBottleneck(nn.Module):
         if mid_channels is None:
             mid_channels = out_channels // 2
 
-        # Saving input channels for potential projection
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        # Bottleneck layers
         self.conv1 = nn.Conv2d(in_channels, mid_channels, kernel_size=1, stride=1, bias=False)
         self.bn1 = nn.BatchNorm2d(mid_channels, eps=0.001, momentum=0.03)
         self.conv2 = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1, bias=False)
@@ -49,32 +47,26 @@ class ResidualBottleneck(nn.Module):
         self.act = nn.SiLU(inplace=True)
 
     def forward(self, x):
-        # Store identity for residual connection
         identity = x
 
-        # Forward through bottleneck
         out = self.act(self.bn1(self.conv1(x)))
         out = self.act(self.bn2(self.conv2(out)))
         out = self.bn3(self.conv3(out))
 
-        # Apply residual connection
         out += self.shortcut(identity)
         out = self.act(out)
-
         return out
 
 class EarlyFusion(nn.Module):
     def __init__(self, c1, c2, k, s, p=None, g=1, d=1, act=True, fusion_mode=0):
         assert c2 % 2 == 0, f"Output channels must be even but got {c2} for fusion layer"
-        super().__init__()
 
+        super().__init__()
         half_filter = int(c2 / 2)
         down_filter = int(half_filter / 2)
-
         self.fusion_mode = fusion_mode
 
         self.rgb_conv1 = nn.Conv2d(3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-
         if c1 > 3:
             self.ir_conv1 = nn.Conv2d(c1 - 3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
         else:
@@ -141,35 +133,31 @@ class EarlyFusion(nn.Module):
 class EarlyFusionRB(nn.Module):
     def __init__(self, c1, c2, k, s, p=None, g=1, d=1, act=True, fusion_mode=0):
         assert c2 % 2 == 0, f"Output channels must be even but got {c2} for fusion layer"
+
         super().__init__()
         half_filter = int(c2 / 2)
         down_filter = int(half_filter / 2)
         self.fusion_mode = fusion_mode
 
-        # Initial feature extraction
         self.rgb_conv1 = nn.Conv2d(3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
         if c1 > 3:
             self.ir_conv1 = nn.Conv2d(c1 - 3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
         else:
             self.ir_conv1 = None
 
-        # Replace stem blocks with residual bottlenecks
         self.stem_block_rgb = ResidualBottleneck(half_filter, half_filter, down_filter)
         self.stem_block_ir = ResidualBottleneck(half_filter, half_filter, down_filter)
 
-        # Batch normalization and activation
         self.bn_rgb = nn.BatchNorm2d(half_filter, eps=0.001, momentum=0.03, affine=True)
         self.bn_ir = nn.BatchNorm2d(half_filter, eps=0.001, momentum=0.03, affine=True)
 
         self.act_rgb = nn.SiLU(inplace=True)
         self.act_ir = nn.SiLU(inplace=True)
 
-        # Fusion weights for the weighted fusion mode
         if fusion_mode == 1:
             self.fusion_weights = nn.Parameter(torch.ones(2), requires_grad=True)
 
     def forward(self, x):
-        # Process RGB channels
         rgb_features = self.rgb_conv1(x[:, :self.rgb_conv1.in_channels, :, :])
         stem_output_rgb = self.stem_block_rgb(rgb_features)
 
@@ -178,7 +166,7 @@ class EarlyFusionRB(nn.Module):
             stem_output_ir = self.stem_block_ir(ir_features)
         else:
             stem_output_ir = torch.zeros_like(stem_output_rgb)
-            if self.training:  # Only print during training to avoid log spam
+            if self.training:
                 print(f"[Info] No IR channels detected. IR branch skipped, filled with zeros.")
 
         if self.fusion_mode == 0:
