@@ -69,7 +69,8 @@ from ultralytics.nn.modules import (
     YOLOEDetect,
     YOLOESegment,
     v10Detect,
-    EarlyFusion
+    EarlyFusion,
+    EarlyFusionRB
 )
 
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, YAML, colorstr, emojis
@@ -227,9 +228,10 @@ class BaseModel(torch.nn.Module):
                 if isinstance(m, v10Detect):
                     m.fuse()  # remove one2many head
                 if isinstance(m, EarlyFusion):
-                    m.rgb_conv1 = fuse_conv_and_bn(m.rgb_conv1, m.bn)
-                    m.ir_conv1 = fuse_conv_and_bn(m.ir_conv1, m.bn)
-                    delattr(m, "bn")
+                    m.rgb_conv1 = fuse_conv_and_bn(m.rgb_conv1, m.bn_rgb)
+                    m.ir_conv1 = fuse_conv_and_bn(m.ir_conv1, m.bn_ir)
+                    delattr(m, "bn_rgb")
+                    delattr(m, "bn_ir")
                     m.forward = m.forward_fuse
             self.info(verbose=verbose)
 
@@ -352,10 +354,7 @@ class DetectionModel(BaseModel):
             LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
             self.yaml["nc"] = nc  # override YAML value
 
-        if self.yaml["n_bones"] == 1:
-            self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)
-        else:
-            self.models = [{i: parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)} for i in self.yaml["n_bones"]]
+        self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)
 
         self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
         self.inplace = self.yaml.get("inplace", True)
