@@ -132,8 +132,6 @@ class EarlyFusion(nn.Module):
 
 class EarlyFusionRB(nn.Module):
     def __init__(self, c1, c2, k, s, p=None, g=1, d=1, act=True, fusion_mode=0):
-        print(c1, c2)
-
         assert c2 % 2 == 0, f"Output channels must be even but got {c2} for fusion layer"
         super().__init__()
         half_filter = int(c2 / 2)
