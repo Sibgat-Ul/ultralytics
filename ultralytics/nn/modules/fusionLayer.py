@@ -26,6 +26,7 @@ class ResidualBottleneck(nn.Module):
         super().__init__()
         if mid_channels is None:
             mid_channels = out_channels // 2
+            print(mid_channels)
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -133,7 +134,7 @@ class EarlyFusion(nn.Module):
 class EarlyFusionRB(nn.Module):
     def __init__(self, c1, c2, k, s, p=None, g=1, d=1, act=True, fusion_mode=0):
         assert c2 % 2 == 0, f"Output channels must be even but got {c2} for fusion layer"
-        print(c1, c2, k, s, p, fusion_mode)
+
         super().__init__()
         half_filter = int(c2 / 2)
         down_filter = int(half_filter / 2)
@@ -165,6 +166,7 @@ class EarlyFusionRB(nn.Module):
 
         if self.fusion_mode == 0:
             fused_features = torch.cat((stem_output_rgb, stem_output_ir), dim=1)
+            print(fused_features.shape)
         else:
             weights = F.softmax(self.fusion_weights, dim=0)
             fused_features = torch.cat((stem_output_rgb * weights[0], stem_output_ir * weights[1]), dim=1)
