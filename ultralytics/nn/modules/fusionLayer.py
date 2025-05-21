@@ -105,6 +105,7 @@ class EarlyFusion(nn.Module):
 
         if self.fusion_mode == 0:
             fused_features = torch.cat((stem_output_rgb, stem_output_ir), dim=1)
+            print(fused_features.shape)
         else:
             weights = F.softmax(self.fusion_weights, dim=0)
             fused_features = torch.cat((stem_output_rgb * weights[0], stem_output_ir * weights[1]), dim=1)
@@ -125,7 +126,6 @@ class EarlyFusion(nn.Module):
 
         if self.fusion_mode == 0:
             fused_features = torch.cat((stem_output_rgb, stem_output_ir), dim=1)
-            print(fused_features.shape)
         else:
             weights = F.softmax(self.fusion_weights, dim=0)
             fused_features = torch.cat((stem_output_rgb * weights[0], stem_output_ir * weights[1]), dim=1)
