@@ -149,12 +149,6 @@ class EarlyFusionRB(nn.Module):
         self.stem_block_rgb = ResidualBottleneck(half_filter, half_filter, down_filter)
         self.stem_block_ir = ResidualBottleneck(half_filter, half_filter, down_filter)
 
-        self.bn_rgb = nn.BatchNorm2d(half_filter, eps=0.001, momentum=0.03, affine=True)
-        self.bn_ir = nn.BatchNorm2d(half_filter, eps=0.001, momentum=0.03, affine=True)
-
-        self.act_rgb = nn.SiLU(inplace=True)
-        self.act_ir = nn.SiLU(inplace=True)
-
         if fusion_mode == 1:
             self.fusion_weights = nn.Parameter(torch.ones(2), requires_grad=True)
 

@@ -233,6 +233,10 @@ class BaseModel(torch.nn.Module):
                     delattr(m, "bn_rgb")
                     delattr(m, "bn_ir")
                     m.forward = m.forward_fuse
+                if isinstance(m, EarlyFusionRB):
+                    m.rgb_conv1 = fuse_conv_and_bn(m.rgb_conv1, m.bn_rgb)
+                    m.ir_conv1 = fuse_conv_and_bn(m.ir_conv1, m.bn_ir)
+                    m.forward = m.forward
             self.info(verbose=verbose)
 
         return self
