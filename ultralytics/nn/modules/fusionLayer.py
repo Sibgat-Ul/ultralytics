@@ -33,7 +33,7 @@ class ResidualBottleneck(nn.Module):
 
         self.conv1 = nn.Conv2d(in_channels, mid_channels, kernel_size=1, stride=1, bias=False)
         self.bn1 = nn.BatchNorm2d(mid_channels, eps=0.001, momentum=0.03)
-        self.conv2 = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv2 = nn.Conv2d(mid_channels, mid_channels, kernel_size=3, stride=1, bias=False)
         self.bn2 = nn.BatchNorm2d(mid_channels, eps=0.001, momentum=0.03)
         self.conv3 = nn.Conv2d(mid_channels, out_channels, kernel_size=1, stride=1, bias=False)
         self.bn3 = nn.BatchNorm2d(out_channels, eps=0.001, momentum=0.03)
@@ -105,7 +105,6 @@ class EarlyFusion(nn.Module):
 
         if self.fusion_mode == 0:
             fused_features = torch.cat((stem_output_rgb, stem_output_ir), dim=1)
-            print(fused_features.shape)
         else:
             weights = F.softmax(self.fusion_weights, dim=0)
             fused_features = torch.cat((stem_output_rgb * weights[0], stem_output_ir * weights[1]), dim=1)
@@ -167,7 +166,6 @@ class EarlyFusionRB(nn.Module):
 
         if self.fusion_mode == 0:
             fused_features = torch.cat((stem_output_rgb, stem_output_ir), dim=1)
-            print(fused_features.shape)
         else:
             weights = F.softmax(self.fusion_weights, dim=0)
             fused_features = torch.cat((stem_output_rgb * weights[0], stem_output_ir * weights[1]), dim=1)
