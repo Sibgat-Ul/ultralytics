@@ -133,7 +133,7 @@ class ResidualBottleneck(nn.Module):
 
 class EarlyFusionRB(nn.Module):
     def __init__(self, c1, c2, k, s, p=None, g=1, d=1, act=True, fusion_mode=1, 
-                 detection_method="learned", enable_dynamic_weights=True, 
+                 detection_method="learned", enable_dynamic_weights=False, 
                  attention_heads=8, attention_dim=None):
         """
         Universal fusion layer that can handle RGB, IR, or RGB+IR inputs automatically
@@ -158,31 +158,28 @@ class EarlyFusionRB(nn.Module):
         self.attention_heads = attention_heads
         self.attention_dim = attention_dim or half_filter
         
-        # Universal convolution layers - can handle any input
-        self.universal_conv1 = nn.Conv2d(c1, half_filter, k, s, autopad(k, p, d), 
+        self.universal_conv1 = nn.Conv2d(3, half_filter, k, s, autopad(k, p, d), 
                                        groups=g, dilation=d, bias=False)
-        self.universal_conv2 = nn.Conv2d(c1, half_filter, k, s, autopad(k, p, d), 
+        self.universal_conv2 = nn.Conv2d(c1-3, half_filter, k, s, autopad(k, p, d), 
                                        groups=g, dilation=d, bias=False)
         
-        # Residual bottleneck blocks
         self.stem_block_1 = ResidualBottleneck(half_filter, half_filter, down_filter)
         self.stem_block_2 = ResidualBottleneck(half_filter, half_filter, down_filter)
         
-        # Attention modules
         self.self_attention = SelfAttention(half_filter, self.attention_heads, self.attention_dim)
         self.cross_attention = CrossAttention(half_filter, self.attention_heads, self.attention_dim)
         
         # Modality detection networks
         if detection_method == "learned":
             self.modality_detector = nn.Sequential(
-                nn.AdaptiveAvgPool2d(8),  # Reduce spatial dimensions
+                nn.AdaptiveAvgPool2d(8),
                 nn.Conv2d(c1, 32, 3, 1, 1, bias=False),
                 nn.BatchNorm2d(32),
                 nn.ReLU(inplace=True),
                 nn.AdaptiveAvgPool2d(1),
                 nn.Conv2d(32, 16, 1, bias=False),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(16, 3, 1, bias=False),  # 3 classes: RGB, IR, RGB+IR
+                nn.Conv2d(16, 3, 1, bias=False),
                 nn.Flatten()
             )
             
@@ -259,8 +256,8 @@ class EarlyFusionRB(nn.Module):
         # Determine modality type
         if modality_type is None:
             detected_type, confidence = self.detect_modality_type(x)
-            if confidence < 0.6:
-                print(f"[Warning] Low confidence ({confidence:.2f}) in modality detection: {detected_type}")
+            # if confidence < 0.6:
+            #     print(f"[Warning] Low confidence ({confidence:.2f}) in modality detection: {detected_type}")
         else:
             detected_type = modality_type
             
@@ -268,9 +265,9 @@ class EarlyFusionRB(nn.Module):
         if detected_type == "both":
             return self._handle_both_modalities(x)
         elif detected_type == "rgb":
-            return self._handle_single_modality(x, "rgb")
+            return self._handle_single_modality(x, "rgb", confidence)
         elif detected_type == "ir":
-            return self._handle_single_modality(x, "ir")
+            return self._handle_single_modality(x, "ir", confidence)
         else:
             raise ValueError(f"Unknown modality type: {detected_type}")
 
@@ -279,8 +276,8 @@ class EarlyFusionRB(nn.Module):
         # Assume first half channels are one modality, second half are another
         mid_channel = x.shape[1] // 2
         
-        modality1_data = x[:, :mid_channel, :, :]
-        modality2_data = x[:, mid_channel:, :, :]
+        modality1_data = x[:, :3, :, :]
+        modality2_data = x[:, 3:, :, :]
         
         # Process both
         features1 = self.stem_block_1(self.universal_conv1(modality1_data))
@@ -308,12 +305,12 @@ class EarlyFusionRB(nn.Module):
             
             return torch.cat([weighted_features1, weighted_features2], dim=1)
 
-    def _handle_single_modality(self, x, modality_name):
+    def _handle_single_modality(self, x, modality_name, confidence):
         """Handle single modality input (RGB or IR) by creating missing modality with blank"""
         b, c, h, w = x.shape
         
-        rgb_data = x[:, :mid_channel, :, :]
-        ir_data = x[:, mid_channel:, :, :]
+        rgb_data = x[:, :3, :, :]
+        ir_data = x[:, 3:, :, :]
         
         rgb_features = self.stem_block_1(self.universal_conv1(rgb_data))
         ir_features = self.stem_block_2(self.universal_conv2(ir_data))
@@ -333,16 +330,16 @@ class EarlyFusionRB(nn.Module):
             weighted_rgb = attended_rgb * weights[:, 0:1, None, None]
             weighted_ir = attended_ir * weights[:, 1:2, None, None]
             
-            return torch.cat([weighted_rgb, weighted_ir], dim=1)
+            return torch.cat((confidence)*[weighted_rgb, (1-confidence)*weighted_ir], dim=1)
         else:
-            return torch.cat([attended_rgb, attended_ir], dim=1)
+            return torch.cat([(confidence)*attended_rgb, (1-confidence)*attended_ir], dim=1)
 
     def get_modality_prediction(self, x):
         """Get modality prediction for analysis"""
         if self.detection_method == "learned":
             with torch.no_grad():
                 logits = self.modality_detector(x)
-                probs = F.softmax(logits, dim=1)
+                probs = F.softmax(logits, dim=1)    
                 return {
                     "predictions": probs,
                     "batch_mean": probs.mean(dim=0),
