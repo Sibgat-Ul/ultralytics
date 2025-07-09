@@ -135,222 +135,106 @@ class EarlyFusionRB(nn.Module):
     def __init__(self, c1, c2, k, s, p=None, g=1, d=1, act=True, fusion_mode=1, 
                  detection_method="learned", enable_dynamic_weights=False, 
                  attention_heads=8, attention_dim=None):
-        """
-        Universal fusion layer that can handle RGB, IR, or RGB+IR inputs automatically
-        
-        Args:
-            detection_method: "learned", "statistical", or "explicit"
-                - "learned": Use a small network to classify modality type
-                - "statistical": Use channel statistics to guess modality
-                - "explicit": Require external modality specification
-            attention_heads: Number of attention heads
-            attention_dim: Attention dimension (defaults to half_filter)
-        """
-        assert c2 % 2 == 0, f"Output channels must be even but got {c2} for fusion layer"
-
         super().__init__()
-        half_filter = int(c2 / 2)
-        down_filter = int(half_filter / 2)
+        assert c2 % 2 == 0, f"Output channels must be even but got {c2}"
+        
+        half_filter = c2 // 2
         self.fusion_mode = fusion_mode
         self.detection_method = detection_method
         self.enable_dynamic_weights = enable_dynamic_weights
-        self.c2 = c2
-        self.attention_heads = attention_heads
-        self.attention_dim = attention_dim or half_filter
         
-        self.universal_conv1 = nn.Conv2d(3, half_filter, k, s, autopad(k, p, d), 
-                                       groups=g, dilation=d, bias=False)
-        self.universal_conv2 = nn.Conv2d(c1-3, half_filter, k, s, autopad(k, p, d), 
-                                       groups=g, dilation=d, bias=False)
+        # RGB path (always 3 channels)
+        self.rgb_conv = nn.Conv2d(3, half_filter, k, s, autopad(k, p, d), 
+                       groups=g, dilation=d, bias=False)
+        self.rgb_stem = ResidualBottleneck(half_filter, half_filter, half_filter//2)
         
-        self.stem_block_1 = ResidualBottleneck(half_filter, half_filter, down_filter)
-        self.stem_block_2 = ResidualBottleneck(half_filter, half_filter, down_filter)
+        # IR path (flexible channels)
+        self.ir_conv = nn.Conv2d(c1-3, half_filter, k, s, autopad(k, p, d),
+                      groups=g, dilation=d, bias=False) if c1 > 3 else None
+        self.ir_stem = ResidualBottleneck(half_filter, half_filter, half_filter//2)
         
-        self.self_attention = SelfAttention(half_filter, self.attention_heads, self.attention_dim)
-        self.cross_attention = CrossAttention(half_filter, self.attention_heads, self.attention_dim)
+        # Attention mechanisms
+        self.self_attention = SelfAttention(half_filter, attention_heads, attention_dim or half_filter)
+        self.cross_attention = CrossAttention(half_filter, attention_heads, attention_dim or half_filter)
         
-        # Modality detection networks
-        if detection_method == "learned":
-            self.modality_detector = nn.Sequential(
-                nn.AdaptiveAvgPool2d(8),
-                nn.Conv2d(c1, 32, 3, 1, 1, bias=False),
-                nn.BatchNorm2d(32),
-                nn.ReLU(inplace=True),
-                nn.AdaptiveAvgPool2d(1),
-                nn.Conv2d(32, 16, 1, bias=False),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(16, 3, 1, bias=False),
-                nn.Flatten()
-            )
-            
+        # Lightweight modality detector
+        self.modality_detector = nn.Sequential(
+            nn.AdaptiveAvgPool2d(4),
+            nn.Conv2d(c1, 16, 1, bias=False),
+            nn.SiLU(),
+            nn.Flatten(),
+            nn.Linear(16*4*4, 3),
+            nn.Softmax(dim=1)
+        
+        # Dynamic fusion
         if enable_dynamic_weights:
             self.dynamic_weight_generator = nn.Sequential(
                 nn.AdaptiveAvgPool2d(1),
-                nn.Conv2d(half_filter * 2, 32, 1, bias=False),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(32, 2, 1, bias=False),
+                nn.Conv2d(half_filter*2, 8, 1, bias=False),
+                nn.SiLU(),
+                nn.Conv2d(8, 2, 1, bias=False),
                 nn.Sigmoid()
             )
-            
-        self.single_modality_projection = nn.Conv2d(half_filter, c2, 1, 1, 0, bias=False)
         
-        self.fusion_weights = nn.Parameter(torch.ones(2), requires_grad=True)
+        # Blank tensors (255 for black instead of 0)
+        self.register_buffer('blank_ir', torch.full((1, 1, 1, 1), 255.0))
+        self.register_buffer('blank_rgb', torch.full((1, 3, 1, 1), 255.0))
 
-    def detect_modality_type(self, x):
-        """
-        Detect what type of modality the input represents
+    def forward(self, x):
+        """Optimized forward pass with minimal conditionals"""
+        B, C, H, W = x.shape
         
-        Returns:
-            modality_type: "rgb", "ir", or "both" 
-            confidence: confidence score
-        """
-        if self.detection_method == "learned":
-            logits = self.modality_detector(x)
-            probs = F.softmax(logits, dim=1) 
-            
-            mean_probs = probs.mean(dim=0)
-            max_idx = mean_probs.argmax().item()
-            confidence = mean_probs[max_idx].item()
-            
-            modality_types = ["rgb", "ir", "both"]
-            return modality_types[max_idx], confidence
-            
-        elif self.detection_method == "statistical":
-            return self._statistical_detection(x)
-            
+        # Process RGB (always present)
+        rgb_in = x[:, :3] if C >= 3 else self.blank_rgb.expand(B, 3, H, W)
+        rgb_features = self.rgb_stem(self.rgb_conv(rgb_in))
+        
+        # Process IR (conditional)
+        if C > 3 and self.ir_conv is not None:
+            ir_in = x[:, 3:]
+            ir_features = self.ir_stem(self.ir_conv(ir_in))
         else:
-            raise ValueError("Unknown detection method or explicit mode requires modality_type parameter")
-
-    def _statistical_detection(self, x):
-        """Statistical heuristics to guess modality type"""
-        channel_means = x.mean(dim=[0, 2, 3])
-        channel_stds = x.std(dim=[0, 2, 3]) 
+            ir_features = self.blank_ir.expand(B, -1, H//s, W//s)  # Match downsampled size
+            if self.training and C <= 3:
+                print("[Info] No IR channels detected. IR branch filled with 255 (black)")
         
+        # Modality detection and fusion
+        modality, confidence = self._detect_modality(x)
+        
+        if modality == "both":
+            rgb_features, ir_features = self.cross_attention(rgb_features, ir_features)
+        elif modality == "rgb":
+            rgb_features = self.self_attention(rgb_features)
+        else:  # IR
+            ir_features = self.self_attention(ir_features)
+        
+        # Dynamic or confidence-based fusion
+        if self.enable_dynamic_weights:
+            weights = self.dynamic_weight_generator(
+                torch.cat([rgb_features, ir_features], dim=1)
+            ).view(B, 2, 1, 1)
+            rgb_features = rgb_features * weights[:, 0]
+            ir_features = ir_features * weights[:, 1]
+        else:
+            if modality != "both":
+                rgb_features = rgb_features * confidence
+                ir_features = ir_features * (1 - confidence)
+        
+        return torch.cat([rgb_features, ir_features], dim=1)
+
+    def _detect_modality(self, x):
+        """Efficient modality detection"""
+        if self.detection_method == "learned":
+            probs = self.modality_detector(x)
+            conf, pred = torch.max(probs.mean(dim=0), dim=0)
+            return ["rgb", "ir", "both"][pred.item()], conf.item()
+        
+        # Fallback to statistical detection
         if x.shape[1] == 3:
-            channel_variation = channel_stds.std().item() 
-            
-            if channel_variation > 0.1:
-                return "rgb", 0.7
-            else:
-                return "ir", 0.6
-                
+            return ("rgb", 0.9) if x.std() > 0.1 else ("ir", 0.7)
         elif x.shape[1] == 1:
-            return "ir", 0.9 
-            
-        elif x.shape[1] == 6:
-            return "both", 0.8
-            
-        else:
-            return "rgb", 0.5
-
-    def forward(self, x, modality_type=None):
-        """
-        Universal forward pass
-        
-        Args:
-            x: Input tensor [B, C, H, W]
-            modality_type: Optional explicit modality specification
-                          "rgb", "ir", "both", or None for auto-detection
-        """
-        
-        # Determine modality type
-        if modality_type is None:
-            detected_type, confidence = self.detect_modality_type(x)
-            # if confidence < 0.6:
-            #     print(f"[Warning] Low confidence ({confidence:.2f}) in modality detection: {detected_type}")
-        else:
-            detected_type = modality_type
-            
-        # Process based on detected/specified modality
-        if detected_type == "both":
-            return self._handle_both_modalities(x)
-        elif detected_type == "rgb":
-            return self._handle_single_modality(x, "rgb", confidence)
-        elif detected_type == "ir":
-            return self._handle_single_modality(x, "ir", confidence)
-        else:
-            raise ValueError(f"Unknown modality type: {detected_type}")
-
-    def _handle_both_modalities(self, x):
-        """Handle input with both RGB and IR using cross-attention"""
-        # Assume first half channels are one modality, second half are another
-        mid_channel = x.shape[1] // 2
-        
-        modality1_data = x[:, :3, :, :]
-        modality2_data = x[:, 3:, :, :]
-        
-        # Process both
-        features1 = self.stem_block_1(self.universal_conv1(modality1_data))
-        features2 = self.stem_block_2(self.universal_conv2(modality2_data))
-        
-        # Apply cross-attention between modalities
-        attended_features1, attended_features2 = self.cross_attention(features1, features2)
-        
-        # Dynamic fusion
-        if self.enable_dynamic_weights:
-            combined = torch.cat([attended_features1, attended_features2], dim=1)
-            weights = self.dynamic_weight_generator(combined).squeeze(-1).squeeze(-1)
-            weights = F.softmax(weights, dim=1)  # [B, 2]
-            
-            # Apply per-sample weights
-            weighted_features1 = attended_features1 * weights[:, 0:1, None, None]
-            weighted_features2 = attended_features2 * weights[:, 1:2, None, None]
-            
-            return torch.cat([weighted_features1, weighted_features2], dim=1)
-        else:
-            # Simple fusion
-            fusion_weights = F.softmax(self.fusion_weights, dim=0)
-            weighted_features1 = attended_features1 * fusion_weights[0]
-            weighted_features2 = attended_features2 * fusion_weights[1]
-            
-            return torch.cat([weighted_features1, weighted_features2], dim=1)
-
-    def _handle_single_modality(self, x, modality_name, confidence):
-        """Handle single modality input (RGB or IR) by creating missing modality with blank"""
-        b, c, h, w = x.shape
-        
-        rgb_data = x[:, :3, :, :]
-        ir_data = x[:, 3:, :, :]
-        
-        rgb_features = self.stem_block_1(self.universal_conv1(rgb_data))
-        ir_features = self.stem_block_2(self.universal_conv2(ir_data))
-        
-        if modality_name == "rgb":
-            attended_rgb = self.self_attention(rgb_features)
-            attended_ir = ir_features 
-        else: 
-            attended_rgb = rgb_features
-            attended_ir = self.self_attention(ir_features)
-  
-        if self.enable_dynamic_weights:
-            combined = torch.cat([attended_rgb, attended_ir], dim=1)
-            weights = self.dynamic_weight_generator(combined).squeeze(-1).squeeze(-1)
-            weights = F.softmax(weights, dim=1)  # [B, 2]
-            
-            weighted_rgb = attended_rgb * weights[:, 0:1, None, None]
-            weighted_ir = attended_ir * weights[:, 1:2, None, None]
-            
-            return torch.cat((confidence)*[weighted_rgb, (1-confidence)*weighted_ir], dim=1)
-        else:
-            return torch.cat([(confidence)*attended_rgb, (1-confidence)*attended_ir], dim=1)
-
-    def get_modality_prediction(self, x):
-        """Get modality prediction for analysis"""
-        if self.detection_method == "learned":
-            with torch.no_grad():
-                logits = self.modality_detector(x)
-                probs = F.softmax(logits, dim=1)    
-                return {
-                    "predictions": probs,
-                    "batch_mean": probs.mean(dim=0),
-                    "predicted_class": ["rgb", "ir", "both"][probs.mean(dim=0).argmax()]
-                }
-        else:
-            modality_type, confidence = self._statistical_detection(x)
-            return {
-                "predicted_class": modality_type,
-                "confidence": confidence
-            }
+            return ("ir", 0.95)
+        else:  # 4+ channels
+            return ("both", 0.8)
 
 
 class SelfAttention(nn.Module):
