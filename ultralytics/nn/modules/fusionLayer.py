@@ -135,7 +135,7 @@ class ResidualBottleneck(nn.Module):
 class EarlyFusionRB(nn.Module):
     def __init__(self, c1, c2, k, s, p=None, g=1, d=1, act=True, fusion_mode=1, 
                  detection_method="learned", enable_dynamic_weights=False, 
-                 attention_heads=4, attention_dim=None):
+                 attention_heads=2, attention_dim=None):
         super().__init__()
         assert c2 % 2 == 0, f"Output channels must be even but got {c2}"
         
