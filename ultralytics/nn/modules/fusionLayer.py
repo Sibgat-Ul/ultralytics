@@ -243,17 +243,21 @@ class EarlyFusionRB(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    """Memory-optimized self-attention for single-modality features"""
-    def __init__(self, in_channels, heads=8, dim_head=64):
+    """Memory-optimized self-attention that supports arbitrary in_channels"""
+    def __init__(self, in_channels, heads=8, dim_head=None):
         super().__init__()
-        assert in_channels == heads * dim_head, "in_channels must be equal to heads * dim_head"
         self.heads = heads
+
+        # Dynamically compute dim_head if not provided
+        if dim_head is None:
+            assert in_channels % heads == 0, "`in_channels` must be divisible by `heads` if `dim_head` is None"
+            dim_head = in_channels // heads
         self.dim_head = dim_head
-        self.scale = dim_head ** -0.5
 
         inner_dim = heads * dim_head
+        self.scale = dim_head ** -0.5
 
-        # Shared QKV projection
+        # Allow projecting in_channels → inner_dim
         self.to_qkv = nn.Conv2d(in_channels, inner_dim * 3, kernel_size=1, bias=False)
         self.to_out = nn.Conv2d(inner_dim, in_channels, kernel_size=1, bias=False)
 
@@ -270,10 +274,11 @@ class SelfAttention(nn.Module):
         residual = x
         x = self.norm(x)
         B, C, H, W = x.shape
+
         qkv = self.to_qkv(x)  # [B, 3*inner_dim, H, W]
         q, k, v = qkv.chunk(3, dim=1)
 
-        # Reshape to [B, heads, H*W, dim_head]
+        # Project to [B, heads, H*W, dim_head]
         q = q.view(B, self.heads, self.dim_head, H * W).transpose(-2, -1)
         k = k.view(B, self.heads, self.dim_head, H * W).transpose(-2, -1)
         v = v.view(B, self.heads, self.dim_head, H * W).transpose(-2, -1)
@@ -281,7 +286,7 @@ class SelfAttention(nn.Module):
         if self.use_flash:
             out = F.scaled_dot_product_attention(q, k, v, scale=self.scale)
         else:
-            # Fallback: chunked attention (optional if memory tight)
+            # Chunked fallback (optional)
             chunk_size = max(1, H * W // 4)
             out_chunks = []
             for i in range(0, H * W, chunk_size):
