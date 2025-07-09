@@ -195,6 +195,7 @@ class EarlyFusionRB(nn.Module):
             ir_in = x[:, 3:]
             ir_features = self.ir_stem(self.ir_conv(ir_in))
         else:
+            s = self.ir_conv.stride[0] if self.ir_conv is not None else self.rgb_conv.stride[0]
             ir_features = self.blank_ir.expand(B, -1, H//s, W//s)  # Match downsampled size
             if self.training and C <= 3:
                 print("[Info] No IR channels detected. IR branch filled with 255 (black)")
