@@ -182,6 +182,7 @@ class EarlyFusionRB(nn.Module):
         
         self.register_buffer('blank_ir', torch.full((1, half_filter, 1, 1), 255.0))
         self.register_buffer('blank_rgb', torch.full((1, 3, 1, 1), 255.0))
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def forward(self, x):
         """Optimized forward pass with minimal conditionals"""
@@ -204,8 +205,8 @@ class EarlyFusionRB(nn.Module):
         # Modality detection and fusion
         modality, confidence = self._detect_modality(x)
         
-        if modality == "both":
-            with torch.cuda.amp.autocast():
+        if modality == "both": 
+            with torch.amp.autocast(self.device):
                 rgb_features, ir_features = self.cross_attention(rgb_features, ir_features)
         elif modality == "rgb":
             rgb_features = self.self_attention(rgb_features)
