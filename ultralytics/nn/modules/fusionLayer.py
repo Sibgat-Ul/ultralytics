@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange
 
 __all__ = (
     "EarlyFusion",
@@ -204,7 +205,8 @@ class EarlyFusionRB(nn.Module):
         modality, confidence = self._detect_modality(x)
         
         if modality == "both":
-            rgb_features, ir_features = self.cross_attention(rgb_features, ir_features)
+            with torch.cuda.amp.autocast():
+                rgb_features, ir_features = self.cross_attention(rgb_features, ir_features)
         elif modality == "rgb":
             rgb_features = self.self_attention(rgb_features)
         else:  # IR
@@ -241,74 +243,76 @@ class EarlyFusionRB(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    """Self-attention module for single modality features"""
+    """Memory-optimized self-attention for single-modality features"""
     def __init__(self, in_channels, heads=8, dim_head=64):
         super().__init__()
+        assert in_channels == heads * dim_head, "in_channels must be equal to heads * dim_head"
         self.heads = heads
         self.dim_head = dim_head
         self.scale = dim_head ** -0.5
-        
-        inner_dim = dim_head * heads
-        self.to_qkv = nn.Conv2d(in_channels, inner_dim * 3, 1, bias=False)
-        self.to_out = nn.Conv2d(inner_dim, in_channels, 1, bias=False)
-        
+
+        inner_dim = heads * dim_head
+
+        # Shared QKV projection
+        self.to_qkv = nn.Conv2d(in_channels, inner_dim * 3, kernel_size=1, bias=False)
+        self.to_out = nn.Conv2d(inner_dim, in_channels, kernel_size=1, bias=False)
+
         self.norm = nn.GroupNorm(1, in_channels)
-        
+        self.use_flash = hasattr(F, "scaled_dot_product_attention")
+
     def forward(self, x):
         """
         Args:
             x: [B, C, H, W]
         Returns:
-            attended_x: [B, C, H, W]
+            out: [B, C, H, W]
         """
         residual = x
         x = self.norm(x)
-        
-        b, c, h, w = x.shape
-        
-        # Generate Q, K, V
-        qkv = self.to_qkv(x).chunk(3, dim=1)  # 3 * [B, inner_dim, H, W]
-        q, k, v = map(lambda t: t.view(b, self.heads, self.dim_head, h * w).transpose(-2, -1), qkv)
-        # q, k, v: [B, heads, H*W, dim_head]
-        
-        # Compute attention
-        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B, heads, H*W, H*W]
-        attn = F.softmax(attn, dim=-1)
-        
-        # Apply attention to values
-        out = torch.matmul(attn, v)  # [B, heads, H*W, dim_head]
-        out = out.transpose(-2, -1).contiguous().view(b, -1, h, w)  # [B, inner_dim, H, W]
-        
-        # Project back
+        B, C, H, W = x.shape
+        qkv = self.to_qkv(x)  # [B, 3*inner_dim, H, W]
+        q, k, v = qkv.chunk(3, dim=1)
+
+        # Reshape to [B, heads, H*W, dim_head]
+        q = q.view(B, self.heads, self.dim_head, H * W).transpose(-2, -1)
+        k = k.view(B, self.heads, self.dim_head, H * W).transpose(-2, -1)
+        v = v.view(B, self.heads, self.dim_head, H * W).transpose(-2, -1)
+
+        if self.use_flash:
+            out = F.scaled_dot_product_attention(q, k, v, scale=self.scale)
+        else:
+            # Fallback: chunked attention (optional if memory tight)
+            chunk_size = max(1, H * W // 4)
+            out_chunks = []
+            for i in range(0, H * W, chunk_size):
+                q_chunk = q[:, :, i:i + chunk_size, :]
+                attn = torch.matmul(q_chunk, k.transpose(-2, -1)) * self.scale
+                attn = F.softmax(attn, dim=-1)
+                out_chunk = torch.matmul(attn, v)
+                out_chunks.append(out_chunk)
+            out = torch.cat(out_chunks, dim=-2)
+
+        out = out.transpose(-2, -1).contiguous().view(B, -1, H, W)
         out = self.to_out(out)
-        
         return out + residual
 
-
 class CrossAttention(nn.Module):
-    """Cross-attention module for dual modality features"""
     def __init__(self, in_channels, heads=8, dim_head=64):
         super().__init__()
+        assert in_channels % heads == 0, "in_channels must be divisible by heads"
         self.heads = heads
-        self.dim_head = dim_head
         self.scale = dim_head ** -0.5
-        
         inner_dim = dim_head * heads
         
-        # Separate Q, K, V projections for each modality
-        self.to_q1 = nn.Conv2d(in_channels, inner_dim, 1, bias=False)
-        self.to_k1 = nn.Conv2d(in_channels, inner_dim, 1, bias=False)
-        self.to_v1 = nn.Conv2d(in_channels, inner_dim, 1, bias=False)
+        # Shared projections for both modalities (50% memory reduction)
+        self.to_qkv = nn.Conv2d(in_channels, inner_dim * 3, 1, bias=False)
+        self.to_out = nn.Conv2d(inner_dim, in_channels, 1, bias=False)
         
-        self.to_q2 = nn.Conv2d(in_channels, inner_dim, 1, bias=False)
-        self.to_k2 = nn.Conv2d(in_channels, inner_dim, 1, bias=False)
-        self.to_v2 = nn.Conv2d(in_channels, inner_dim, 1, bias=False)
+        # Memory-efficient group norms
+        self.norm = nn.GroupNorm(1, in_channels)
         
-        self.to_out1 = nn.Conv2d(inner_dim, in_channels, 1, bias=False)
-        self.to_out2 = nn.Conv2d(inner_dim, in_channels, 1, bias=False)
-        
-        self.norm1 = nn.GroupNorm(1, in_channels)
-        self.norm2 = nn.GroupNorm(1, in_channels)
+        # Flash attention if available
+        self.use_flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         
     def forward(self, x1, x2):
         """
@@ -316,43 +320,62 @@ class CrossAttention(nn.Module):
             x1: [B, C, H, W] - first modality features
             x2: [B, C, H, W] - second modality features
         Returns:
-            attended_x1: [B, C, H, W]
-            attended_x2: [B, C, H, W]
+            Tuple of attended features (x1, x2)
         """
         residual1, residual2 = x1, x2
-        x1, x2 = self.norm1(x1), self.norm2(x2)
+        x1, x2 = self.norm(x1), self.norm(x2)
         
-        b, c, h, w = x1.shape
+        # Process both modalities through shared projections
+        qkv1 = self.to_qkv(x1)  # [B, 3*inner_dim, H, W]
+        qkv2 = self.to_qkv(x2)  # [B, 3*inner_dim, H, W]
         
-        # Generate Q, K, V for both modalities
-        q1 = self.to_q1(x1).view(b, self.heads, self.dim_head, h * w).transpose(-2, -1)
-        k1 = self.to_k1(x1).view(b, self.heads, self.dim_head, h * w).transpose(-2, -1)
-        v1 = self.to_v1(x1).view(b, self.heads, self.dim_head, h * w).transpose(-2, -1)
+        # Split into q,k,v chunks (memory efficient view operations)
+        q1, k1, v1 = qkv1.chunk(3, dim=1)
+        q2, k2, v2 = qkv2.chunk(3, dim=1)
         
-        q2 = self.to_q2(x2).view(b, self.heads, self.dim_head, h * w).transpose(-2, -1)
-        k2 = self.to_k2(x2).view(b, self.heads, self.dim_head, h * w).transpose(-2, -1)
-        v2 = self.to_v2(x2).view(b, self.heads, self.dim_head, h * w).transpose(-2, -1)
+        # Reshape for attention - using view instead of reshape
+        B, _, H, W = x1.shape
+        q1 = q1.view(B, self.heads, -1, H*W).transpose(-1, -2)
+        k1 = k1.view(B, self.heads, -1, H*W).transpose(-1, -2)
+        v1 = v1.view(B, self.heads, -1, H*W).transpose(-1, -2)
         
-        # Cross-attention: x1 attends to x2, x2 attends to x1
-        attn1_to_2 = torch.matmul(q1, k2.transpose(-2, -1)) * self.scale
-        attn2_to_1 = torch.matmul(q2, k1.transpose(-2, -1)) * self.scale
+        q2 = q2.view(B, self.heads, -1, H*W).transpose(-1, -2)
+        k2 = k2.view(B, self.heads, -1, H*W).transpose(-1, -2)
+        v2 = v2.view(B, self.heads, -1, H*W).transpose(-1, -2)
         
-        attn1_to_2 = F.softmax(attn1_to_2, dim=-1)
-        attn2_to_1 = F.softmax(attn2_to_1, dim=-1)
+        # Memory-efficient attention computation
+        if self.use_flash:
+            # Use PyTorch 2.0's optimized attention
+            out1 = F.scaled_dot_product_attention(q1, k2, v2, scale=self.scale)
+            out2 = F.scaled_dot_product_attention(q2, k1, v1, scale=self.scale)
+        else:
+            # Manual chunked attention to reduce peak memory
+            chunk_size = max(1, H*W // 4)  # Process in 4 chunks
+            out1, out2 = [], []
+            
+            for i in range(0, H*W, chunk_size):
+                q1_chunk = q1[:, :, i:i+chunk_size, :]
+                attn1 = (q1_chunk @ k2.transpose(-2,-1)) * self.scale
+                attn1 = F.softmax(attn1, dim=-1)
+                out1.append(attn1 @ v2)
+                
+                q2_chunk = q2[..., i:i+chunk_size, :]
+                attn2 = (q2_chunk @ k1.transpose(-2,-1)) * self.scale
+                attn2 = F.softmax(attn2, dim=-1)
+                out2.append(attn2 @ v1)
+            
+            out1 = torch.cat(out1, dim=-2)
+            out2 = torch.cat(out2, dim=-2)
         
-        # Apply cross-attention
-        out1 = torch.matmul(attn1_to_2, v2)  # x1 attends to x2's values
-        out2 = torch.matmul(attn2_to_1, v1)  # x2 attends to x1's values
+        # Restore original shape
+        out1 = out1.transpose(-1,-2).contiguous().view(B, -1, H, W)
+        out2 = out2.transpose(-1,-2).contiguous().view(B, -1, H, W)
         
-        # Reshape and project
-        out1 = out1.transpose(-2, -1).contiguous().view(b, -1, h, w)
-        out2 = out2.transpose(-2, -1).contiguous().view(b, -1, h, w)
+        # Final projection
+        out1 = self.to_out(out1) + residual1
+        out2 = self.to_out(out2) + residual2
         
-        out1 = self.to_out1(out1)
-        out2 = self.to_out2(out2)
-        
-        return out1 + residual1, out2 + residual2
-
+        return out1, out2
 
 # # Helper functions
 # def autopad(k, p=None, d=1):
