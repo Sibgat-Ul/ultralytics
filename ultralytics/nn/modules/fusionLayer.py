@@ -159,15 +159,11 @@ class EarlyFusionRB(nn.Module):
         self.cross_attention = CrossAttention(half_filter, attention_heads, attention_dim or half_filter)
         
         self.modality_detector = nn.Sequential(
-            nn.AdaptiveAvgPool2d(8),
-            nn.Conv2d(c1, 32, 3, 1, 1, bias=False),
-            nn.BatchNorm2d(32),
+            nn.AdaptiveAvgPool2d(4),
+            nn.Conv2d(c1, 16, 1, bias=False),
             nn.SiLU(),
-            nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(32, 16),
-            nn.SiLU(),
-            nn.Linear(16, 3),
+            nn.Linear(16*4*4, 3),
             nn.Softmax(dim=1)
         )
                      
