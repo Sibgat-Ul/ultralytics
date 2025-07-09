@@ -159,7 +159,7 @@ class EarlyFusionRB(nn.Module):
         
         self.modality_detector = nn.Sequential(
             nn.AdaptiveAvgPool2d(8),
-            nn.Conv2d(c1, 32, 3, 1, 1, bias=False)
+            nn.Conv2d(c1, 32, 3, 1, 1, bias=False),
             nn.BatchNorm2d(32),
             nn.SiLU(),
             nn.AdaptiveAvgPool2d(1),
