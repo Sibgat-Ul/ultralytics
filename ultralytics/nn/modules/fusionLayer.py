@@ -179,7 +179,7 @@ class EarlyFusionRB(nn.Module):
                 nn.Sigmoid()
             )
         
-        self.register_buffer('blank_ir', torch.full((1, 1, 1, 1), 255.0))
+        self.register_buffer('blank_ir', torch.full((1, half_filter, 1, 1), 255.0))
         self.register_buffer('blank_rgb', torch.full((1, 3, 1, 1), 255.0))
 
     def forward(self, x):
@@ -216,7 +216,7 @@ class EarlyFusionRB(nn.Module):
                 torch.cat([rgb_features, ir_features], dim=1)
             ).view(B, 2, 1, 1)
             rgb_features = rgb_features * weights[:, 0]
-            ir_features = ir_features * weights[:, 1]
+            ir_features = ir_features * weights[:, 1] 
         else:
             if modality != "both":
                 rgb_features = rgb_features * confidence
