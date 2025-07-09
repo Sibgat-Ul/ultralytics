@@ -157,16 +157,19 @@ class EarlyFusionRB(nn.Module):
         self.self_attention = SelfAttention(half_filter, attention_heads, attention_dim or half_filter)
         self.cross_attention = CrossAttention(half_filter, attention_heads, attention_dim or half_filter)
         
-        # Lightweight modality detector
         self.modality_detector = nn.Sequential(
-            nn.AdaptiveAvgPool2d(4),
-            nn.Conv2d(c1, 16, 1, bias=False),
+            nn.AdaptiveAvgPool2d(8),
+            nn.Conv2d(c1, 32, 3, 1, 1, bias=False)
+            nn.BatchNorm2d(32),
             nn.SiLU(),
+            nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.Linear(16*4*4, 3),
+            nn.Linear(32, 16),
+            nn.SiLU(),
+            nn.Linear(16, 3),
             nn.Softmax(dim=1)
-        
-        # Dynamic fusion
+        )
+                     
         if enable_dynamic_weights:
             self.dynamic_weight_generator = nn.Sequential(
                 nn.AdaptiveAvgPool2d(1),
@@ -176,7 +179,6 @@ class EarlyFusionRB(nn.Module):
                 nn.Sigmoid()
             )
         
-        # Blank tensors (255 for black instead of 0)
         self.register_buffer('blank_ir', torch.full((1, 1, 1, 1), 255.0))
         self.register_buffer('blank_rgb', torch.full((1, 3, 1, 1), 255.0))
 
