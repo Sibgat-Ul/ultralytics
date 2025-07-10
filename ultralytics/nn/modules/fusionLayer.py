@@ -6,7 +6,8 @@ from einops import rearrange
 
 __all__ = (
     "EarlyFusion",
-    "EarlyFusionRB"
+    "EarlyFusionRB",
+    "EarlyFusionRBL"
     # "LateFusionYOLOv11"
 )
 
@@ -378,6 +379,157 @@ class CrossAttention(nn.Module):
         out2 = self.to_out(out2) + residual2
         
         return out1, out2
+
+class EarlyFusionRB(nn.Module):
+    def __init__(self, c1, c2, k, s, p=None, g=1, d=1, act=True, fusion_mode=1, 
+                 detection_method="learned", enable_dynamic_weights=False, 
+                 attention_heads=2, attention_dim=None):
+        super().__init__()
+        assert c2 % 2 == 0, f"Output channels must be even but got {c2}"
+        
+        half_filter = c2 // 2
+        self.fusion_mode = fusion_mode
+        self.detection_method = detection_method
+        self.enable_dynamic_weights = enable_dynamic_weights
+        
+        # RGB path (always 3 channels)
+        self.rgb_conv = nn.Conv2d(3, half_filter, k, s, autopad(k, p, d), 
+                       groups=g, dilation=d, bias=False)
+        self.rgb_stem = ResidualBottleneck(half_filter, half_filter, half_filter//2)
+        
+        # IR path (flexible channels)
+        self.ir_conv = nn.Conv2d(c1-3, half_filter, k, s, autopad(k, p, d),
+                      groups=g, dilation=d, bias=False) if c1 > 3 else None
+        self.ir_stem = ResidualBottleneck(half_filter, half_filter, half_filter//2)
+        
+        # Attention mechanisms
+        self.self_attention = SelfAttention(half_filter, attention_heads, attention_dim or half_filter)
+        self.cross_attention = CrossAttention(half_filter, attention_heads, attention_dim or half_filter)
+        
+        self.modality_detector = nn.Sequential(
+            nn.AdaptiveAvgPool2d(4),
+            nn.Conv2d(c1, 16, 1, bias=False),
+            nn.SiLU(),
+            nn.Flatten(),
+            nn.Linear(16*4*4, 3),
+            nn.Softmax(dim=1)
+        )
+                     
+        if enable_dynamic_weights:
+            self.dynamic_weight_generator = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(half_filter*2, 8, 1, bias=False),
+                nn.SiLU(),
+                nn.Conv2d(8, 2, 1, bias=False),
+                nn.Sigmoid()
+            )
+        
+        self.register_buffer('blank_ir', torch.full((1, half_filter, 1, 1), 255.0))
+        self.register_buffer('blank_rgb', torch.full((1, 3, 1, 1), 255.0))
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def forward(self, x):
+        """Optimized forward pass with minimal conditionals"""
+        B, C, H, W = x.shape
+        
+        # Process RGB (always present)
+        rgb_in = x[:, :3] if C >= 3 else self.blank_rgb.expand(B, 3, H, W)
+        rgb_features = self.rgb_stem(self.rgb_conv(rgb_in))
+        
+        # Process IR (conditional)
+        if C > 3 and self.ir_conv is not None:
+            ir_in = x[:, 3:]
+            ir_features = self.ir_stem(self.ir_conv(ir_in))
+        else:
+            s = self.ir_conv.stride[0] if self.ir_conv is not None else self.rgb_conv.stride[0]
+            ir_features = self.blank_ir.expand(B, -1, H//s, W//s)  # Match downsampled size
+            if self.training and C <= 3:
+                print("[Info] No IR channels detected. IR branch filled with 255 (black)")
+        
+        # Modality detection and fusion
+        modality, confidence = self._detect_modality(x)
+        
+        if modality == "both": 
+            with torch.amp.autocast(self.device):
+                rgb_features, ir_features = self.cross_attention(rgb_features, ir_features)
+        elif modality == "rgb":
+            rgb_features = self.self_attention(rgb_features)
+        else:  # IR
+            ir_features = self.self_attention(ir_features)
+        
+        # Dynamic or confidence-based fusion
+        if self.enable_dynamic_weights:
+            weights = self.dynamic_weight_generator(
+                torch.cat([rgb_features, ir_features], dim=1)
+            ).view(B, 2, 1, 1)
+            rgb_features = rgb_features * weights[:, 0]
+            ir_features = ir_features * weights[:, 1] 
+        else:
+            if modality != "both":
+                rgb_features = rgb_features * confidence
+                ir_features = ir_features * (1 - confidence)
+        
+        return torch.cat([rgb_features, ir_features], dim=1)
+
+    def _detect_modality(self, x):
+        """Efficient modality detection"""
+        if self.detection_method == "learned":
+            probs = self.modality_detector(x)
+            conf, pred = torch.max(probs.mean(dim=0), dim=0)
+            return ["rgb", "ir", "both"][pred.item()], conf.item()
+        
+        # Fallback to statistical detection
+        if x.shape[1] == 3:
+            return ("rgb", 0.9) if x.std() > 0.1 else ("ir", 0.7)
+        elif x.shape[1] == 1:
+            return ("ir", 0.95)
+        else:  # 4+ channels
+            return ("both", 0.8)
+
+class EarlyFusionRBL(nn.Module):
+    def __init__(self, c1, c2, k, s, p=None, g=1, d=1, act=True, fusion_mode=1):
+        assert c2 % 2 == 0, f"Output channels must be even but got {c2} for fusion layer"
+
+        super().__init__()
+        half_filter = c2 // 2
+        down_filter = half_filter // 2
+        self.fusion_mode = fusion_mode
+
+        self.rgb_conv1 = nn.Conv2d(3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        if c1 > 3:
+            self.ir_conv1 = nn.Conv2d(c1 - 3, half_filter, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        else:
+            self.ir_conv1 = None
+
+        self.stem_block_rgb = ResidualBottleneck(half_filter, half_filter, down_filter)
+        self.stem_block_ir = ResidualBottleneck(half_filter, half_filter, down_filter)
+
+        if fusion_mode == 1:
+            self.fusion_weights = nn.Parameter(torch.ones(2), requires_grad=True)
+
+        # self.register_buffer('blank_ir', torch.full((1, half_filter, 1, 1), 255.0))
+        # self.register_buffer('blank_rgb', torch.full((1, 3, 1, 1), 255.0))
+        # self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def forward(self, x):
+        rgb_features = self.rgb_conv1(x[:, :self.rgb_conv1.in_channels, :, :])
+        stem_output_rgb = self.stem_block_rgb(rgb_features)
+
+        if x.shape[1] > self.rgb_conv1.in_channels and self.ir_conv1 is not None:
+            ir_features = self.ir_conv1(x[:, self.rgb_conv1.in_channels:, :, :])
+            stem_output_ir = self.stem_block_ir(ir_features)
+        else:
+            stem_output_ir = torch.zeros_like(stem_output_rgb)
+            if self.training:
+                print(f"[Info] No IR channels detected. IR branch skipped, filled with zeros.")
+
+        if self.fusion_mode == 0:
+            fused_features = torch.cat((stem_output_rgb, stem_output_ir), dim=1)
+        else:
+            weights = F.softmax(self.fusion_weights, dim=0)
+            fused_features = torch.cat((stem_output_rgb * weights[0], stem_output_ir * weights[1]), dim=1)
+
+        return fused_features
 
 # # Helper functions
 # def autopad(k, p=None, d=1):
