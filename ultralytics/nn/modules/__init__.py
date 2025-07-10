@@ -102,12 +102,13 @@ from .transformer import (
     TransformerLayer,
 )
 
-from .fusionLayer import EarlyFusion, EarlyFusionRB
+from .fusionLayer import EarlyFusion, EarlyFusionRB, EarlyFusionRBL
 
 __all__ = (
     # Fusion layers go here
     "EarlyFusion",
     "EarlyFusionRB",
+    "EarlyFusionRBL",
     # # #
     "Conv",
     "Conv2",
