@@ -70,7 +70,8 @@ from ultralytics.nn.modules import (
     YOLOESegment,
     v10Detect,
     EarlyFusion,
-    EarlyFusionRB
+    EarlyFusionRB,
+    EarlyFusionRBL,
 )
 
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, YAML, colorstr, emojis
@@ -234,6 +235,8 @@ class BaseModel(torch.nn.Module):
                     delattr(m, "bn_ir")
                     m.forward = m.forward_fuse
                 if isinstance(m, EarlyFusionRB):
+                    m.forward = m.forward
+                if isinstance(m, EarlyFusionRBL):
                     m.forward = m.forward
             self.info(verbose=verbose)
 
@@ -1393,6 +1396,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             Conv,
             EarlyFusion,
             EarlyFusionRB,
+            EarlyFusionRBL,
             ConvTranspose,
             GhostConv,
             Bottleneck,
